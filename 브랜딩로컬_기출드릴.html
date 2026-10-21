@@ -101,6 +101,20 @@ textarea.answer { min-height: 110px; line-height: 1.6; }
 .answer.essay { min-height: 200px; }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .hint { font-size: 12.5px; color: var(--muted); }
+.tools-row { display: flex; flex-wrap: wrap; gap: 6px 14px; border-top: 1px dashed var(--rule); padding-top: 12px; }
+.link { background: none; border: 0; padding: 2px 0; color: var(--muted); font-size: 13px; text-decoration: underline; text-underline-offset: 3px; }
+.link:hover { color: var(--ink); }
+.link.more { color: var(--accent); }
+.tool-msg { font-size: 13px; color: var(--ink); }
+.tool-msg.busy::after { content: " …"; }
+.toast { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; background: var(--ink); color: var(--sheet); border-radius: 8px; padding: 8px 12px; font-size: 13.5px; }
+.toast .link { color: var(--sheet); }
+.chip.gen { background: var(--ok-soft); color: var(--ok); }
+.manage { display: grid; gap: 8px; background: var(--sheet); border: 1px solid var(--rule); border-radius: 10px; padding: 12px 14px; }
+.manage summary { cursor: pointer; font-weight: 700; font-size: 14px; }
+.mrow { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: start; font-size: 13.5px; border-top: 1px dashed var(--rule); padding-top: 8px; }
+.mrow span { min-width: 0; }
+.mrow .link { white-space: nowrap; }
 
 /* feedback */
 .fb { border-radius: 12px; padding: 16px 18px; display: grid; gap: 12px; border: 1.5px solid var(--rule); background: var(--sheet); }
@@ -835,12 +849,21 @@ const Q = [
 /* =========================================================
    상태와 채점
    ========================================================= */
-Q.forEach((q, i) => { q.id = "q" + i; });
+function hash(str) { let h = 5381; for (let i = 0; i < str.length; i++) h = ((h << 5) + h + str.charCodeAt(i)) | 0; return (h >>> 0).toString(36); }
+const OLD = {};
+Q.forEach((q, i) => { q.id = "h" + hash(q.q); OLD["q" + i] = q.id; });
 const KEY = "bl-drill-v1";
+const LKEY = "bl-drill-local";   // 공유 저장소가 없을 때 쓰는 빼기·요청 기록
 const MASTER = 2;          // 연속 2번 맞히면 외움
 const REINSERT = 3;        // 틀리면 3문제 뒤 다시
 let st = {};
 try { st = JSON.parse(localStorage.getItem(KEY) || "{}") || {}; } catch (e) { st = {}; }
+// 예전 번호 기반 기록을 새 id로 옮긴다
+Object.keys(st).forEach(k => { if (OLD[k]) { st[OLD[k]] = st[k]; delete st[k]; } });
+let hidden = new Set(), requests = [], db = null, sample = null;
+try { const l = JSON.parse(localStorage.getItem(LKEY) || "{}"); (l.hidden || []).forEach(h => hidden.add(h)); requests = l.requests || []; } catch (e) {}
+function saveLocal() { try { localStorage.setItem(LKEY, JSON.stringify({ hidden: [...hidden], requests })); } catch (e) {} }
+const QA = () => Q.filter(q => !hidden.has(q.id));
 function save() { try { localStorage.setItem(KEY, JSON.stringify(st)); } catch (e) {} }
 function S(id) { return st[id] || (st[id] = { box: 0, seen: 0, wrong: 0 }); }
 const isMastered = q => (st[q.id] && st[q.id].box >= MASTER);
@@ -874,14 +897,14 @@ function dday() {
 }
 
 function meterHTML(list) {
-  const total = list.length;
+  const total = list.length || 1;
   const m = list.filter(isMastered).length;
   const l = list.filter(isLearning).length;
   return { m, l, total, bar: `<div class="meter-bar" role="img" aria-label="외움 ${m}, 학습 중 ${l}, 전체 ${total}"><span class="mb-done" style="width:${m / total * 100}%"></span><span class="mb-half" style="width:${l / total * 100}%"></span></div>` };
 }
 
 function header() {
-  const mt = meterHTML(Q);
+  const mt = meterHTML(QA());
   return `<header class="top">
     <div class="top-row">
       <div class="brand"><h1>브랜딩 로컬 기출 드릴</h1><span class="dday">${dday()}</span></div>
@@ -897,7 +920,7 @@ let confirmReset = false;
 function home() {
   sess = null;
   const steps = STAGES.map(sg => {
-    const list = Q.filter(q => q.s === sg.id);
+    const list = QA().filter(q => q.s === sg.id);
     const mt = meterHTML(list);
     const done = mt.m === mt.total;
     const started = list.some(q => st[q.id] && st[q.id].seen);
@@ -913,12 +936,13 @@ function home() {
       <button class="btn${done ? " ghost" : ""}" data-stage="${sg.id}">${done ? "다시 보기" : started ? "이어하기" : "시작"}</button>
     </div>`;
   }).join("");
-  const wrongs = Q.filter(q => st[q.id] && st[q.id].wrong > 0 && !isMastered(q)).length;
-  app.innerHTML = header() + `
+  const wrongs = QA().filter(q => st[q.id] && st[q.id].wrong > 0 && !isMastered(q)).length;
+  app.innerHTML = header() + `<div id="toastWrap">${toastHTML()}</div>
     <section class="how" aria-label="학습 방법">
       <p><b>순서대로 STEP 1부터</b> 푸세요. 강의 순서 = 시험 범위 순서입니다.</p>
       <p>한 문제를 <b>두 번 연속 맞히면 '외움'</b>. 틀리면 풀이를 보고, <b>3문제 뒤에 다시</b> 나옵니다. 모든 문제를 외울 때까지 반복합니다.</p>
       <p>단답형은 자동 채점(한국어·영어 모두 인정), 문장형·서술형은 핵심 포인트를 자동으로 체크한 뒤 스스로 채점합니다.</p>
+      <p>안 나올 것 같은 문제는 <b>'이 문제 빼기'</b>, 더 연습하고 싶은 문제는 <b>'비슷한 문제 더 만들기'</b>를 누르세요. 문제 카드 아래에 있습니다.</p>
     </section>
     <div class="sec-label">커리큘럼</div>
     <div class="ladder">${steps}</div>
@@ -927,12 +951,15 @@ function home() {
       <div class="step"><div class="step-body"><div class="step-title">오답 집중</div><div class="step-meta">틀렸고 아직 못 외운 문제 ${wrongs}개</div></div><button class="btn${wrongs ? " pen" : " ghost"}" data-mode="wrong" ${wrongs ? "" : "disabled"}>풀기</button></div>
       <div class="step"><div class="step-body"><div class="step-title">실전 모의고사</div><div class="step-meta">전 범위 무작위 · 단답 10 · 문장 4 · 서술 2</div></div><button class="btn" data-mode="mock">시작</button></div>
     </div>
+    ${manageHTML()}
     ${confirmReset
       ? `<div class="confirm"><span>모든 기록을 지울까요?</span><button class="btn pen" id="reset-yes">지우기</button><button class="btn ghost" id="reset-no">취소</button></div>`
       : `<button class="reset" id="reset">학습 기록 초기화</button>`}
   `;
+  bindToast();
   app.querySelectorAll("[data-stage]").forEach(b => b.onclick = () => startStage(+b.dataset.stage));
   app.querySelectorAll("[data-mode]").forEach(b => b.onclick = () => b.dataset.mode === "mock" ? startMock() : startWrong());
+  app.querySelectorAll("[data-unhide]").forEach(b => b.onclick = () => { unhide(b.dataset.unhide); home(); });
   const r = document.getElementById("reset"); if (r) r.onclick = () => { confirmReset = true; home(); };
   const y = document.getElementById("reset-yes"); if (y) y.onclick = () => { st = {}; save(); confirmReset = false; home(); };
   const n = document.getElementById("reset-no"); if (n) n.onclick = () => { confirmReset = false; home(); };
@@ -942,7 +969,7 @@ function home() {
 function shuffle(a) { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
 
 function startStage(id) {
-  const list = Q.filter(q => q.s === id);
+  const list = QA().filter(q => q.s === id);
   let pool = list.filter(q => !isMastered(q));
   const review = pool.length === 0;
   if (review) pool = list.slice();
@@ -952,12 +979,12 @@ function startStage(id) {
   next();
 }
 function startWrong() {
-  const pool = shuffle(Q.filter(q => st[q.id] && st[q.id].wrong > 0 && !isMastered(q)));
+  const pool = shuffle(QA().filter(q => st[q.id] && st[q.id].wrong > 0 && !isMastered(q)));
   sess = { title: "오답 집중", queue: pool.map(q => q.id), log: [], mode: "wrong" };
   next();
 }
 function startMock() {
-  const pick = (t, n) => shuffle(Q.filter(q => q.t === t)).slice(0, n);
+  const pick = (t, n) => shuffle(QA().filter(q => q.t === t)).slice(0, n);
   const pool = [...pick("s", 10), ...pick("w", 4), ...pick("x", 2)];
   sess = { title: "실전 모의고사", queue: pool.map(q => q.id), log: [], mode: "mock", noRequeue: true };
   next();
@@ -973,12 +1000,13 @@ function next() {
     ? `<input class="answer" id="ans" type="text" autocomplete="off" placeholder="답을 입력하세요 (여러 개면 쉼표로)">`
     : `<textarea class="answer${q.t === "x" ? " essay" : ""}" id="ans" placeholder="${q.t === "x" ? "정의 → 기준 → 사례 → 선택 순서로 써보세요" : "1~3문장으로 써보세요"}"></textarea>`;
   app.innerHTML = `
+    <div id="toastWrap">${toastHTML()}</div>
     <div class="qhead">
       <div class="qhead-left"><button class="back" id="back">← 목록</button><span class="qstage">${sess.title}</span></div>
       <span class="qleft">남은 ${sess.queue.length}문제 · 푼 ${sess.log.length}</span>
     </div>
     <article class="card">
-      <div class="chips"><span class="chip t-${q.t}">${TYPE[q.t]}</span><span class="chip">${STAGES[q.s - 1].ses}</span><span class="chip box">${boxLabel}</span></div>
+      <div class="chips"><span class="chip t-${q.t}">${TYPE[q.t]}</span><span class="chip">${STAGES[q.s - 1].ses}</span>${q.gen ? '<span class="chip gen">추가 문제</span>' : ""}<span class="chip box">${boxLabel}</span></div>
       <p class="qtext">${esc(q.q)}${q.t === "s" ? "<small>영어·한국어 어느 쪽으로 써도 뜻이 맞으면 정답</small>" : ""}</p>
       ${input}
       <div class="actions">
@@ -986,11 +1014,19 @@ function next() {
         <button class="btn ghost" id="idk">모르겠음 · 풀이 보기</button>
       </div>
       <p class="hint">${q.t === "s" ? "Enter로 채점" : "Ctrl+Enter로 제출"}</p>
+      <div class="tools-row">
+        <button class="link more" id="moreBtn">＋ 비슷한 문제 더 만들기</button>
+        <button class="link" id="hideBtn">이 문제 빼기 (안 나올 것 같음)</button>
+      </div>
+      <p class="tool-msg" id="toolMsg" aria-live="polite"></p>
     </article>
     <div id="fb"></div>`;
   const ans = document.getElementById("ans");
   ans.focus({ preventScroll: true });
-  document.getElementById("back").onclick = home;
+  document.getElementById("back").onclick = () => { toast = null; home(); };
+  document.getElementById("hideBtn").onclick = () => hideCurrent();
+  document.getElementById("moreBtn").onclick = () => requestMore(q);
+  bindToast();
   document.getElementById("submit").onclick = () => submit(ans.value, false);
   document.getElementById("idk").onclick = () => submit(ans.value, true);
   ans.addEventListener("keydown", e => {
@@ -1033,6 +1069,7 @@ function lockSelf(msg) {
 }
 
 function record(ok) {
+  toast = null;
   const q = sess.cur, s = S(q.id);
   s.seen++;
   if (ok) s.box = Math.min(s.box + 1, MASTER + 1); else { s.box = 0; s.wrong++; }
@@ -1081,6 +1118,143 @@ function feedbackLong(q, keys, hit, ratio, gaveUp) {
           <div class="actions"><button class="btn ok" id="sg-ok">맞았다 (정답 처리)</button><button class="btn pen" id="sg-no">다시 공부</button></div></div>`}
   </section>`;
 }
+
+/* ---------- 빼기 · 비슷한 문제 ---------- */
+let toast = null;
+function toastHTML() {
+  if (!toast) return "";
+  return `<div class="toast" role="status"><span>${esc(toast.text)}</span>${toast.undo ? '<button class="link" id="undoBtn">되돌리기</button>' : ""}<button class="link" id="toastX">닫기</button></div>`;
+}
+function bindToast() {
+  const u = document.getElementById("undoBtn");
+  if (u) u.onclick = () => { const id = toast.undo; unhide(id); if (sess) sess.queue.unshift(id); toast = null; sess ? next() : home(); };
+  const x = document.getElementById("toastX");
+  if (x) x.onclick = () => { toast = null; const w = document.getElementById("toastWrap"); if (w) w.innerHTML = ""; };
+}
+function hideCurrent() {
+  const q = sess.cur;
+  hidden.add(q.id); saveLocal();
+  if (db) db.collection("hidden").doc(q.id).set({ q: q.q, s: q.s, at: Date.now() }).catch(() => {});
+  sess.queue = sess.queue.filter(id => id !== q.id);
+  toast = { text: "문제를 뺐습니다. 홈 화면 '뺀 문제'에서 언제든 되돌릴 수 있어요.", undo: q.id };
+  next();
+}
+function unhide(id) {
+  hidden.delete(id); saveLocal();
+  if (db) db.collection("hidden").doc(id).delete().catch(() => {});
+}
+
+function stageContext(q) {
+  return QA().filter(x => x.s === q.s && x.id !== q.id && !x.gen).slice(0, 40)
+    .map(x => `- [${TYPE[x.t]}] ${x.q}\n  정답/요지: ${x.a || x.model}\n  풀이: ${x.e}`).join("\n");
+}
+function cleanGen(o, q) {
+  if (!o || typeof o.q !== "string" || !o.q.trim()) return null;
+  const strip = v => String(v || "").replace(/<[^>]*>/g, "");
+  const base = { s: q.s, q: strip(o.q), e: strip(o.e), m: strip(o.m) || "비슷한 개념을 다른 방향에서 묻는 문제", gen: true, from: q.id };
+  if (o.t === "s" && Array.isArray(o.g) && o.g.length) {
+    const g = o.g.map(gr => (Array.isArray(gr) ? gr : [gr]).map(strip).filter(Boolean)).filter(gr => gr.length);
+    if (!g.length) return null;
+    return { ...base, t: "s", g, a: strip(o.a) || g.map(gr => gr[0]).join(" · ") };
+  }
+  if ((o.t === "w" || o.t === "x") && Array.isArray(o.k) && o.k.length) {
+    const k = o.k.map(it => [strip(it[0] || it.label), (Array.isArray(it[1] || it.keywords) ? (it[1] || it.keywords) : []).map(strip).filter(Boolean)]).filter(it => it[0] && it[1].length);
+    if (!k.length || !o.model) return null;
+    return { ...base, t: o.t, k, model: strip(o.model) };
+  }
+  return null;
+}
+function addExtra(item, id) {
+  if (Q.some(x => x.id === id)) return false;
+  item.id = id; Q.push(item); return true;
+}
+
+let genBusy = false;
+async function requestMore(q) {
+  const msg = document.getElementById("toolMsg");
+  const btn = document.getElementById("moreBtn");
+  const req = { qid: q.id, q: q.q, stage: q.s, type: q.t, at: Date.now() };
+  requests.push(req); saveLocal();
+  let reqRef = null;
+  if (db) { try { reqRef = await db.collection("requests").add({ ...req, status: "pending" }); } catch (e) {} }
+  if (!sample || genBusy) {
+    msg.textContent = db
+      ? "요청을 저장했습니다. Claude에게 '드릴 추가 요청 반영해줘'라고 말하면 비슷한 문제를 만들어 넣어드립니다."
+      : "요청을 이 기기에 저장했습니다. Claude에게 이 문제를 알려주면 비슷한 문제를 더 만들어 드립니다.";
+    return;
+  }
+  genBusy = true; btn.disabled = true;
+  msg.className = "tool-msg busy"; msg.textContent = "Claude가 비슷한 문제를 만드는 중";
+  const src = q.t === "s"
+    ? `유형: 단답형\n문제: ${q.q}\n정답: ${q.a}\n풀이: ${q.e}`
+    : `유형: ${TYPE[q.t]}\n문제: ${q.q}\n예시 답안: ${q.model}\n풀이: ${q.e}`;
+  const prompt = `너는 대학 강의 「브랜딩 로컬」 중간고사 출제자다. 아래 [원본 문제]와 같은 개념을 다른 방향에서 묻는 새 문제 2개를 만들어라.
+규칙:
+- [원본 문제]와 [같은 범위의 기존 문제]에 나온 사실·용어·사례만 사용한다. 자료에 없는 사실을 지어내지 않는다.
+- 원본과 똑같은 질문은 금지. 빈칸 채우기, 영어↔한국어 바꾸기, 정의를 주고 용어 묻기, 사례를 주고 개념 묻기처럼 각도를 바꾼다.
+- 한국어로 쓴다. 단답형은 짧은 정답, 문장형은 1~3문장 답.
+- 정답 그룹 g는 '정답에 반드시 들어가야 할 요소'마다 하나의 배열이고, 배열 안에는 인정할 동의어(한국어·영어 둘 다)를 넣는다.
+
+[원본 문제]
+${src}
+
+[같은 범위의 기존 문제]
+${stageContext(q)}
+
+JSON 배열만 답하라. 형식 예:
+[{"t":"s","q":"질문","g":[["체류인구","체류"]],"a":"정답 표시","e":"풀이 2문장","m":"외우기 쉬운 한 줄"},
+ {"t":"w","q":"질문","k":[["채점 포인트",["키워드1","키워드2"]]],"model":"예시 답안","e":"풀이","m":"외우기 쉬운 한 줄"}]`;
+  try {
+    const out = await sample.json(prompt, { cache: false });
+    const arr = (Array.isArray(out) ? out : [out]).map(o => cleanGen(o, q)).filter(Boolean).slice(0, 3);
+    if (!arr.length) throw { code: "invalid_json" };
+    const added = [];
+    for (const item of arr) {
+      let id = "g" + hash(item.q + Date.now() + Math.random());
+      if (db) { try { const ref = await db.collection("extra").add({ s: item.s, from: item.from, t: item.t, q: item.q, json: JSON.stringify(item), at: Date.now() }); id = "x" + ref.id; } catch (e) {} }
+      if (addExtra(item, id)) added.push(id);
+    }
+    if (reqRef) reqRef.update({ status: "generated", made: added.length }).catch(() => {});
+    if (sess && sess.cur && sess.cur.id === q.id) sess.queue.splice(sess.answered ? 0 : 1, 0, ...added);
+    msg.className = "tool-msg";
+    msg.textContent = `비슷한 문제 ${added.length}개를 만들어 바로 다음에 넣었습니다.${db ? " 다른 기기에서도 보입니다." : " (이번 화면에서만 유지됩니다)"}`;
+  } catch (e) {
+    msg.className = "tool-msg";
+    msg.textContent = e && (e.code === "not_granted" || e.code === "sampling_disabled")
+      ? "Claude 사용이 허용되지 않아 요청만 저장했습니다. Claude에게 '드릴 추가 요청 반영해줘'라고 말해 주세요."
+      : e && e.code === "rate_limited" ? "요청이 많아 잠시 뒤 다시 눌러 주세요. 요청은 저장했습니다."
+      : "문제를 만들지 못했습니다. 요청은 저장했으니 잠시 뒤 다시 누르거나 Claude에게 반영을 부탁해 주세요.";
+    if (e && (e.code === "not_granted" || e.code === "sampling_disabled")) sample = null;
+  } finally { genBusy = false; if (btn.isConnected) btn.disabled = false; }
+}
+
+function manageHTML() {
+  const hid = Q.filter(q => hidden.has(q.id));
+  const gen = Q.filter(q => q.gen && !hidden.has(q.id)).length;
+  const reqs = requests.length;
+  if (!hid.length && !gen && !reqs) return "";
+  const rows = hid.map(q => `<div class="mrow"><span>${esc(q.q)}</span><button class="link" data-unhide="${q.id}">되돌리기</button></div>`).join("");
+  return `<details class="manage"${hid.length ? "" : ""}>
+    <summary>문제 관리 · 뺀 문제 ${hid.length} · 추가된 문제 ${gen} · 요청 ${reqs}</summary>
+    ${hid.length ? rows : '<p class="hint">뺀 문제가 없습니다.</p>'}
+  </details>`;
+}
+
+/* ---------- 공유 저장소·Claude 연결 (가능할 때만) ---------- */
+(async () => {
+  if (!window.claude || !window.claude.use) return;
+  try {
+    db = await window.claude.use("db");
+    if (db) {
+      const [h, x] = await Promise.all([db.collection("hidden").get(), db.collection("extra").get()]);
+      h.docs.forEach(d => hidden.add(d.id));
+      x.docs.forEach(d => { try { const body = d.data(); const item = cleanGen(JSON.parse(body.json), { s: body.s, id: body.from }); if (item) addExtra(item, "x" + d.id); } catch (e) {} });
+      saveLocal();
+      if (!sess) home();
+    }
+  } catch (e) { db = null; }
+  try { sample = await window.claude.use("sample"); } catch (e) { sample = null; }
+})();
 
 function summary() {
   const n = sess.log.length;
